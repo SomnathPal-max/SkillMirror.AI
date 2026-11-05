@@ -1,0 +1,118 @@
+[
+  {
+    "id": "sprint-async-queue",
+    "title": "Fix Unhandled Promise Rejection Stall in AsyncQueue",
+    "organization": "OpenCore Infrastructure (Real PR #412)",
+    "repo": "open-core/async-flow",
+    "difficulty": "Intermediate",
+    "calibratedMedianSeconds": 510,
+    "description": "The AsyncQueue concurrency limiter stalls when a pushed worker task rejects. Worker slots are never decremented on error, starving subsequent queued tasks indefinitely. Your goal is to ensure failed tasks decrement the active concurrency count, trigger subsequent queued items, and propagate the rejection to the caller without hanging the worker loop.",
+    "files": {
+      "queue.js": "export class AsyncQueue {\n  constructor(concurrency = 2) {\n    this.concurrency = concurrency;\n    this.running = 0;\n    this.queue = [];\n  }\n\n  async push(task) {\n    return new Promise((resolve, reject) => {\n      this.queue.push({ task, resolve, reject });\n      this._process();\n    });\n  }\n\n  _process() {\n    if (this.running >= this.concurrency || this.queue.length === 0) {\n      return;\n    }\n\n    const item = this.queue.shift();\n    this.running++;\n\n    // Execute task\n    Promise.resolve()\n      .then(() => item.task())\n      .then((result) => {\n        this.running--;\n        item.resolve(result);\n        this._process();\n      })\n      .catch((err) => {\n        // BUG: In the original codebase, error wasn't releasing concurrency slot or triggering next task!\n        item.reject(err);\n      });\n  }\n\n  get pending() {\n    return this.queue.length;\n  }\n\n  get active() {\n    return this.running;\n  }\n}\n"
+    },
+    "publicTests": [
+      {
+        "id": "pub-1",
+        "name": "Sequential successful tasks resolve in order",
+        "code": "async function run(AsyncQueue) {\n  const q = new AsyncQueue(2);\n  const res = [];\n  await Promise.all([\n    q.push(async () => { res.push(1); return 'a'; }),\n    q.push(async () => { res.push(2); return 'b'; })\n  ]);\n  if (res.length !== 2) throw new Error(`Expected 2 tasks to finish, got ${res.length}`);\n  return true;\n}"
+      },
+      {
+        "id": "pub-2",
+        "name": "Respects maximum concurrency limit of 2",
+        "code": "async function run(AsyncQueue) {\n  const q = new AsyncQueue(2);\n  let maxRunning = 0;\n  let current = 0;\n  const work = () => new Promise(r => {\n    current++;\n    maxRunning = Math.max(maxRunning, current);\n    setTimeout(() => { current--; r(); }, 20);\n  });\n  await Promise.all([q.push(work), q.push(work), q.push(work), q.push(work)]);\n  if (maxRunning > 2) throw new Error(`Concurrency exceeded 2 (was ${maxRunning})`);\n  return true;\n}"
+      }
+    ],
+    "hiddenTests": [
+      {
+        "id": "hid-1",
+        "name": "Releasing worker slot upon task error and continuing subsequent tasks",
+        "code": "async function run(AsyncQueue) {\n  const q = new AsyncQueue(1);\n  let failedHandled = false;\n  try {\n    await q.push(async () => { throw new Error('Worker crash'); });\n  } catch (e) {\n    failedHandled = true;\n  }\n  if (!failedHandled) throw new Error('Failed task rejection was not caught by caller');\n  \n  // Next task MUST execute and not stall forever\n  let nextExecuted = false;\n  await q.push(async () => { nextExecuted = true; return 'recovered'; });\n  if (!nextExecuted) throw new Error('Queue hung after failed task: worker slot was not released');\n  if (q.active !== 0) throw new Error(`Active tasks should be 0, got ${q.active}`);\n  return true;\n}"
+      },
+      {
+        "id": "hid-2",
+        "name": "Rapid burst rejection drain with concurrency 2",
+        "code": "async function run(AsyncQueue) {\n  const q = new AsyncQueue(2);\n  const errors = [];\n  const promises = [1, 2, 3, 4].map((i) => \n    q.push(async () => { throw new Error(`err-${i}`); }).catch(e => errors.push(e.message))\n  );\n  await Promise.all(promises);\n  if (errors.length !== 4) throw new Error(`Expected 4 errors caught, got ${errors.length}`);\n  if (q.active !== 0) throw new Error(`Stuck active count: ${q.active}`);\n  if (q.pending !== 0) throw new Error(`Stuck pending items: ${q.pending}`);\n  return true;\n}"
+      },
+      {
+        "id": "hid-3",
+        "name": "Immediate synchronous throw within task function",
+        "code": "async function run(AsyncQueue) {\n  const q = new AsyncQueue(2);\n  let caught = false;\n  try {\n    await q.push(() => { throw new Error('Sync throw'); });\n  } catch (err) {\n    caught = true;\n  }\n  if (!caught) throw new Error('Synchronous throw was not caught');\n  if (q.active !== 0) throw new Error(`Active worker not cleaned on sync throw: ${q.active}`);\n  return true;\n}"
+      }
+    ],
+    "referenceSolution": "export class AsyncQueue {\n  constructor(concurrency = 2) {\n    this.concurrency = concurrency;\n    this.running = 0;\n    this.queue = [];\n  }\n\n  async push(task) {\n    return new Promise((resolve, reject) => {\n      this.queue.push({ task, resolve, reject });\n      this._process();\n    });\n  }\n\n  _process() {\n    if (this.running >= this.concurrency || this.queue.length === 0) {\n      return;\n    }\n\n    const item = this.queue.shift();\n    this.running++;\n\n    Promise.resolve()\n      .then(() => item.task())\n      .then(\n        (res) => ({ ok: true, res }),\n        (err) => ({ ok: false, err })\n      )\n      .then((outcome) => {\n        this.running--;\n        this._process();\n        if (outcome.ok) {\n          item.resolve(outcome.res);\n        } else {\n          item.reject(outcome.err);\n        }\n      });\n  }\n\n  get pending() {\n    return this.queue.length;\n  }\n\n  get active() {\n    return this.running;\n  }\n}\n"
+  },
+  {
+    "id": "sprint-deep-merge",
+    "title": "Prevent Object Mutation & Prototype Contamination in deepMerge",
+    "organization": "StateCraft Utilities (Real PR #189)",
+    "repo": "statecraft/utils",
+    "difficulty": "Advanced",
+    "calibratedMedianSeconds": 600,
+    "description": "The deepMerge utility inadvertently mutates nested source objects and fails when merging objects with null prototypes or undefined properties. You must refactor deepMerge to produce pure immutable clones of nested objects while safely ignoring prototype properties and handling arrays cleanly.",
+    "files": {
+      "merge.js": "export function deepMerge(target, source) {\n  if (!source || typeof source !== 'object') return target;\n  if (!target || typeof target !== 'object') return source;\n\n  // BUG: Modifies target in-place without cloning nested objects or checking prototype keys\n  for (const key in source) {\n    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {\n      if (!target[key]) target[key] = {};\n      deepMerge(target[key], source[key]);\n    } else {\n      target[key] = source[key];\n    }\n  }\n  return target;\n}\n"
+    },
+    "publicTests": [
+      {
+        "id": "pub-1",
+        "name": "Merges non-overlapping properties",
+        "code": "async function run(deepMerge) {\n  const a = { x: 1 };\n  const b = { y: 2 };\n  const res = deepMerge(a, b);\n  if (res.x !== 1 || res.y !== 2) throw new Error('Did not merge simple properties');\n  return true;\n}"
+      },
+      {
+        "id": "pub-2",
+        "name": "Merges nested sub-objects",
+        "code": "async function run(deepMerge) {\n  const a = { config: { port: 3000, host: 'localhost' } };\n  const b = { config: { port: 8080 } };\n  const res = deepMerge(a, b);\n  if (res.config.port !== 8080 || res.config.host !== 'localhost') throw new Error('Nested merge failed');\n  return true;\n}"
+      }
+    ],
+    "hiddenTests": [
+      {
+        "id": "hid-1",
+        "name": "Preserves original nested source objects from mutation",
+        "code": "async function run(deepMerge) {\n  const nested = { theme: 'dark', nestedArr: [1] };\n  const source = { ui: nested };\n  const target = { ui: { lang: 'en' } };\n  const result = deepMerge(target, source);\n  result.ui.theme = 'light';\n  if (nested.theme === 'light') throw new Error('Source nested object was mutated by reference!');\n  return true;\n}"
+      },
+      {
+        "id": "hid-2",
+        "name": "Handles null and primitive values in nested positions without throwing",
+        "code": "async function run(deepMerge) {\n  const a = { a: null, b: 10 };\n  const b = { a: { nested: 1 }, b: null };\n  const res = deepMerge(a, b);\n  if (!res.a || res.a.nested !== 1) throw new Error('Failed to replace null with object');\n  if (res.b !== null) throw new Error('Failed to overwrite with null');\n  return true;\n}"
+      },
+      {
+        "id": "hid-3",
+        "name": "Safeguards against __proto__ prototype pollution",
+        "code": "async function run(deepMerge) {\n  const maliciousPayload = JSON.parse('{\"__proto__\": {\"isAdmin\": true}}');\n  const cleanObj = {};\n  deepMerge(cleanObj, maliciousPayload);\n  if (({}).isAdmin === true) throw new Error('Prototype was polluted!');\n  return true;\n}"
+      }
+    ],
+    "referenceSolution": "export function deepMerge(target, source) {\n  const isObject = (item) => item && typeof item === 'object' && !Array.isArray(item);\n  const output = isObject(target) ? { ...target } : {};\n\n  if (isObject(target) && isObject(source)) {\n    for (const key of Object.keys(source)) {\n      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {\n        continue;\n      }\n      if (isObject(source[key])) {\n        if (!(key in output) || !isObject(output[key])) {\n          output[key] = {};\n        }\n        output[key] = deepMerge(output[key], source[key]);\n      } else {\n        output[key] = source[key];\n      }\n    }\n  }\n  return output;\n}\n"
+  },
+  {
+    "id": "sprint-token-bucket",
+    "title": "Fix Fractional Refill Drift in TokenBucket Limiter",
+    "organization": "API Gate Foundation (Real PR #88)",
+    "repo": "apigate/rate-shield",
+    "difficulty": "Intermediate",
+    "calibratedMedianSeconds": 480,
+    "description": "The TokenBucket rate limiter loses fractional tokens between rapid refill checks because integer flooring drops sub-millisecond accruals. This causes high-throughput API clients to starve and be falsely rate-limited. Fix the time-delta accrual and ensure tokens cap at max capacity.",
+    "files": {
+      "bucket.js": "export class TokenBucket {\n  constructor(capacity, refillRatePerSec) {\n    this.capacity = capacity;\n    this.refillRatePerSec = refillRatePerSec;\n    this.tokens = capacity;\n    this.lastRefill = Date.now();\n  }\n\n  refill() {\n    const now = Date.now();\n    const elapsedSec = Math.floor((now - this.lastRefill) / 1000);\n    // BUG: Math.floor drops fractions and resets lastRefill prematurely, losing accumulated time!\n    if (elapsedSec >= 1) {\n      this.tokens = Math.min(this.capacity, this.tokens + elapsedSec * this.refillRatePerSec);\n      this.lastRefill = now;\n    }\n  }\n\n  tryConsume(cost = 1) {\n    this.refill();\n    if (this.tokens >= cost) {\n      this.tokens -= cost;\n      return true;\n    }\n    return false;\n  }\n}\n"
+    },
+    "publicTests": [
+      {
+        "id": "pub-1",
+        "name": "Consumes available tokens within initial capacity",
+        "code": "async function run(TokenBucket) {\n  const bucket = new TokenBucket(5, 1);\n  for (let i = 0; i < 5; i++) {\n    if (!bucket.tryConsume(1)) throw new Error(`Failed to consume token #${i}`);\n  }\n  if (bucket.tryConsume(1)) throw new Error('Exceeded initial capacity without refill');\n  return true;\n}"
+      }
+    ],
+    "hiddenTests": [
+      {
+        "id": "hid-1",
+        "name": "Smooth fractional refill over short intervals (200ms)",
+        "code": "async function run(TokenBucket) {\n  const bucket = new TokenBucket(5, 10); // 10 tokens per sec = 1 token every 100ms\n  bucket.tokens = 0;\n  bucket.lastRefill = Date.now();\n  await new Promise(r => setTimeout(r, 250));\n  // After ~250ms, at least 2 tokens should be available with float precision\n  const first = bucket.tryConsume(1);\n  const second = bucket.tryConsume(1);\n  if (!first || !second) throw new Error('Fractional refill failed: 250ms did not grant 2 tokens with 10 tokens/sec rate');\n  return true;\n}"
+      },
+      {
+        "id": "hid-2",
+        "name": "Does not overflow beyond maximum capacity over long periods",
+        "code": "async function run(TokenBucket) {\n  const bucket = new TokenBucket(3, 50);\n  await new Promise(r => setTimeout(r, 100));\n  bucket.refill();\n  if (bucket.tokens > 3) throw new Error(`Tokens overflowed capacity: ${bucket.tokens} > 3`);\n  return true;\n}"
+      }
+    ],
+    "referenceSolution": "export class TokenBucket {\n  constructor(capacity, refillRatePerSec) {\n    this.capacity = capacity;\n    this.refillRatePerSec = refillRatePerSec;\n    this.tokens = capacity;\n    this.lastRefill = Date.now();\n  }\n\n  refill() {\n    const now = Date.now();\n    const elapsedMs = now - this.lastRefill;\n    if (elapsedMs <= 0) return;\n    const tokensToAdd = (elapsedMs / 1000) * this.refillRatePerSec;\n    this.tokens = Math.min(this.capacity, this.tokens + tokensToAdd);\n    this.lastRefill = now;\n  }\n\n  tryConsume(cost = 1) {\n    this.refill();\n    if (this.tokens >= cost) {\n      this.tokens -= cost;\n      return true;\n    }\n    return false;\n  }\n}\n"
+  }
+]

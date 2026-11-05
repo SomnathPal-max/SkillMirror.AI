@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: skillmirror-ai
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt && cd client && npm install && npm run build && cd .."
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 10000
+    healthCheckPath: /api/health

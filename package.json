@@ -1,0 +1,25 @@
+{
+  "name": "skillmirror-ai",
+  "version": "2.4.0",
+  "description": "SkillMirror AI — Full-Stack AI Talent Discovery, Skill Assessment, Proof-of-Work, and Opportunity Matching Platform.",
+  "scripts": {
+    "start": "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "dev:backend": "python -m uvicorn app.main:app --reload --port 8000",
+    "dev:frontend": "cd client && npm run dev",
+    "build:frontend": "cd client && npm run build",
+    "test": "python -m unittest tests/test_engine.py"
+  },
+  "keywords": [
+    "skillmirror-ai",
+    "talent-discovery",
+    "proof-of-work",
+    "ghost-sprint",
+    "thought-x-ray",
+    "deterministic-signals",
+    "fastapi",
+    "react",
+    "recharts"
+  ],
+  "author": "SkillMirror AI Team",
+  "license": "MIT"
+}
